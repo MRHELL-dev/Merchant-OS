@@ -1,0 +1,21 @@
+{
+  "name": "@merchant-os/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "generate": "tsc && drizzle-kit generate",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.38.4"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.30.5",
+    "typescript": "^5.8.2"
+  }
+}

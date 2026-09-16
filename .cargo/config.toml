@@ -1,0 +1,6 @@
+[build]
+target-dir = "C:/Users/adity/.cargo_target"
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=C:\\Users\\adity\\MERCHA~1\\apps\\desktop\\src-tauri\\manifest.o"]
+

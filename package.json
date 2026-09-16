@@ -1,0 +1,23 @@
+{
+  "name": "merchant-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Merchant OS - Clean Offline-First Desktop Foundation",
+  "workspaces": [
+    "shared",
+    "database",
+    "apps/desktop",
+    "tests"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@merchant-os/desktop",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:rust": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
+    "tauri": "npm run tauri --workspace=@merchant-os/desktop --"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
