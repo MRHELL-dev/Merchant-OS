@@ -11,6 +11,7 @@ out/
 # Rust / Cargo
 target/
 Cargo.lock
+*.o
 
 # Tauri
 src-tauri/target/
