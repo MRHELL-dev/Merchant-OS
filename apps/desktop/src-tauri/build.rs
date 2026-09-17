@@ -46,6 +46,73 @@ fn find_64bit_windres() -> Option<PathBuf> {
     None
 }
 
+fn find_webview2_loader(manifest_dir: &Path) -> Option<PathBuf> {
+    let target_arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x64",
+        Ok("x86") => "x86",
+        Ok("aarch64") => "arm64",
+        _ => "x64",
+    };
+
+    // 1. Check if already staged in manifest_dir
+    let manifest_loader = manifest_dir.join("WebView2Loader.dll");
+    if manifest_loader.exists() {
+        return Some(manifest_loader);
+    }
+
+    // 2. Check target_dir (OUT_DIR ancestor)
+    if let Ok(out_dir) = std::env::var("OUT_DIR") {
+        let out_path = PathBuf::from(out_dir);
+        if let Some(target_dir) = out_path.ancestors().nth(3) {
+            let candidate = target_dir.join("WebView2Loader.dll");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            if let Ok(entries) = fs::read_dir(target_dir.join("build")) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.to_string_lossy().contains("webview2-com-sys") {
+                        let candidate = p.join("out").join(target_arch).join("WebView2Loader.dll");
+                        if candidate.exists() {
+                            return Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Search in CARGO_HOME / registry for webview2-com-sys crate
+    let cargo_home = std::env::var("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|_| {
+            std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .map(|h| PathBuf::from(h).join(".cargo"))
+        });
+
+    if let Ok(cargo_home) = cargo_home {
+        let registry_src = cargo_home.join("registry").join("src");
+        if let Ok(indices) = fs::read_dir(&registry_src) {
+            for index_entry in indices.flatten() {
+                if let Ok(crates) = fs::read_dir(index_entry.path()) {
+                    for crate_entry in crates.flatten() {
+                        let name = crate_entry.file_name();
+                        if name.to_string_lossy().starts_with("webview2-com-sys") {
+                            let candidate = crate_entry.path().join(target_arch).join("WebView2Loader.dll");
+                            if candidate.exists() {
+                                return Some(candidate);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into()));
     let manifest_rc = manifest_dir.join("manifest.rc");
@@ -89,23 +156,30 @@ fn main() {
         println!("cargo:rustc-link-arg={}", manifest_o.display());
     }
 
-    let windows_attrs = tauri_build::WindowsAttributes::new_without_app_manifest();
-    let attrs = tauri_build::Attributes::new().windows_attributes(windows_attrs);
-    tauri_build::try_build(attrs).expect("failed to build tauri attributes");
+    // Stage WebView2Loader.dll BEFORE tauri_build validates bundle.resources
+    if let Some(loader_source) = find_webview2_loader(&manifest_dir) {
+        let manifest_loader = manifest_dir.join("WebView2Loader.dll");
+        if loader_source != manifest_loader {
+            let _ = fs::copy(&loader_source, &manifest_loader);
+        }
 
-    // Ensure WebView2Loader.dll is copied to the deps directory for test runners if available
-    if let Ok(out_dir) = std::env::var("OUT_DIR") {
-        let out_path = PathBuf::from(out_dir);
-        // OUT_DIR is typically target/debug/build/<pkg>/out
-        // Find target/debug/deps
-        if let Some(target_debug) = out_path.ancestors().nth(3) {
-            let src_dll = target_debug.join("WebView2Loader.dll");
-            let deps_dir = target_debug.join("deps");
-            let dst_dll = deps_dir.join("WebView2Loader.dll");
-
-            if src_dll.exists() && deps_dir.exists() && !dst_dll.exists() {
-                let _ = fs::copy(&src_dll, &dst_dll);
+        if let Ok(out_dir) = std::env::var("OUT_DIR") {
+            let out_path = PathBuf::from(out_dir);
+            if let Some(target_dir) = out_path.ancestors().nth(3) {
+                let target_loader = target_dir.join("WebView2Loader.dll");
+                if loader_source != target_loader && !target_loader.exists() {
+                    let _ = fs::copy(&loader_source, &target_loader);
+                }
+                let deps_dir = target_dir.join("deps");
+                let dst_deps = deps_dir.join("WebView2Loader.dll");
+                if deps_dir.exists() && !dst_deps.exists() {
+                    let _ = fs::copy(&loader_source, &dst_deps);
+                }
             }
         }
     }
+
+    let windows_attrs = tauri_build::WindowsAttributes::new_without_app_manifest();
+    let attrs = tauri_build::Attributes::new().windows_attributes(windows_attrs);
+    tauri_build::try_build(attrs).expect("failed to build tauri attributes");
 }

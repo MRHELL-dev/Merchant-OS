@@ -12,6 +12,7 @@ out/
 target/
 Cargo.lock
 *.o
+WebView2Loader.dll
 
 # Tauri
 src-tauri/target/
