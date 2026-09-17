@@ -5603,6 +5603,223 @@ pub fn get_demand_recommendations(
     Ok(recs)
 }
 
+// ================================================================================================
+// BUILD 15: FIRST-RUN AUTHENTICATION & ADMIN ONBOARDING
+// ================================================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInitialAdminInput {
+    pub username: String,
+    pub password: String,
+    pub confirm_password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginInput {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthenticatedUserDto {
+    pub user_id: String,
+    pub username: String,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthStateDto {
+    pub status: String,
+    pub user: Option<AuthenticatedUserDto>,
+}
+
+pub fn get_auth_state_inner(
+    db: &DatabaseManager,
+    session: &AuthSession,
+) -> Result<AuthStateDto, String> {
+    db.with_connection(|conn| {
+        let admin_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM users WHERE role = 'ADMIN'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        if admin_count == 0 {
+            Ok(AuthStateDto {
+                status: "FIRST_RUN_ADMIN_SETUP".to_string(),
+                user: None,
+            })
+        } else if let Ok(identity) = session.get_identity() {
+            Ok(AuthStateDto {
+                status: "AUTHENTICATED".to_string(),
+                user: Some(AuthenticatedUserDto {
+                    user_id: identity.user_id().to_string(),
+                    username: identity.username().to_string(),
+                    role: identity.role().as_str().to_string(),
+                }),
+            })
+        } else {
+            Ok(AuthStateDto {
+                status: "UNAUTHENTICATED".to_string(),
+                user: None,
+            })
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+pub fn create_initial_admin_inner(
+    db: &DatabaseManager,
+    session: &AuthSession,
+    input: CreateInitialAdminInput,
+) -> Result<AuthenticatedUserDto, String> {
+    let trimmed_user = input.username.trim();
+    if trimmed_user.is_empty() {
+        return Err("Admin username cannot be empty".to_string());
+    }
+    if input.password.is_empty() {
+        return Err("Admin password cannot be empty".to_string());
+    }
+    if input.password != input.confirm_password {
+        return Err("Passwords do not match".to_string());
+    }
+
+    db.with_connection(|conn| {
+        // Authoritative backend check: reject if an Admin already exists
+        let admin_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM users WHERE role = 'ADMIN'",
+            [],
+            |r| r.get(0),
+        )?;
+        if admin_count > 0 {
+            return Err(crate::db::operations::BusinessError::DatabaseError(
+                "An Admin account already exists. Initial setup is complete.".to_string(),
+            ));
+        }
+
+        let identity = crate::auth::AuthService::create_initial_admin(
+            conn,
+            trimmed_user,
+            &input.password,
+            &input.confirm_password,
+            "Initial Admin Setup",
+            "Merchant OS Local Store",
+        )
+        .map_err(|e| match e {
+            crate::auth::AuthError::PasswordMismatch => {
+                crate::db::operations::BusinessError::DatabaseError(
+                    "Passwords do not match".to_string(),
+                )
+            }
+            crate::auth::AuthError::AdminAlreadyExists => {
+                crate::db::operations::BusinessError::DatabaseError(
+                    "An Admin account already exists".to_string(),
+                )
+            }
+            crate::auth::AuthError::WeakPassword(msg) => {
+                crate::db::operations::BusinessError::DatabaseError(msg)
+            }
+            other => crate::db::operations::BusinessError::DatabaseError(other.to_string()),
+        })?;
+
+        // Immediately establish authenticated session for the new initial admin
+        session.set_identity(Some(identity.clone()));
+
+        Ok(AuthenticatedUserDto {
+            user_id: identity.user_id().to_string(),
+            username: identity.username().to_string(),
+            role: identity.role().as_str().to_string(),
+        })
+    })
+    .map_err(|e| match e {
+        crate::db::operations::BusinessError::DatabaseError(msg) => msg,
+        other => other.to_string(),
+    })
+}
+
+pub fn login_inner(
+    db: &DatabaseManager,
+    session: &AuthSession,
+    input: LoginInput,
+) -> Result<AuthenticatedUserDto, String> {
+    let trimmed_user = input.username.trim();
+    if trimmed_user.is_empty() {
+        return Err("Username cannot be empty".to_string());
+    }
+    if input.password.is_empty() {
+        return Err("Password cannot be empty".to_string());
+    }
+
+    db.with_connection(|conn| {
+        let identity = crate::auth::AuthService::authenticate(conn, trimmed_user, &input.password)
+            .map_err(|e| match e {
+                crate::auth::AuthError::InvalidCredentials => {
+                    crate::db::operations::BusinessError::DatabaseError(
+                        "Invalid username or password".to_string(),
+                    )
+                }
+                crate::auth::AuthError::UserInactive => {
+                    crate::db::operations::BusinessError::DatabaseError(
+                        "This user account is inactive".to_string(),
+                    )
+                }
+                other => crate::db::operations::BusinessError::DatabaseError(other.to_string()),
+            })?;
+
+        session.set_identity(Some(identity.clone()));
+
+        Ok(AuthenticatedUserDto {
+            user_id: identity.user_id().to_string(),
+            username: identity.username().to_string(),
+            role: identity.role().as_str().to_string(),
+        })
+    })
+    .map_err(|e| match e {
+        crate::db::operations::BusinessError::DatabaseError(msg) => msg,
+        other => other.to_string(),
+    })
+}
+
+pub fn logout_inner(session: &AuthSession) -> Result<(), String> {
+    session.set_identity(None);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_auth_state(
+    db: tauri::State<DatabaseManager>,
+    session: tauri::State<AuthSession>,
+) -> Result<AuthStateDto, String> {
+    get_auth_state_inner(&db, &session)
+}
+
+#[tauri::command]
+pub fn create_initial_admin(
+    db: tauri::State<DatabaseManager>,
+    session: tauri::State<AuthSession>,
+    input: CreateInitialAdminInput,
+) -> Result<AuthenticatedUserDto, String> {
+    create_initial_admin_inner(&db, &session, input)
+}
+
+#[tauri::command]
+pub fn login(
+    db: tauri::State<DatabaseManager>,
+    session: tauri::State<AuthSession>,
+    input: LoginInput,
+) -> Result<AuthenticatedUserDto, String> {
+    login_inner(&db, &session, input)
+}
+
+#[tauri::command]
+pub fn logout(session: tauri::State<AuthSession>) -> Result<(), String> {
+    logout_inner(&session)
+}
+
 
 
 

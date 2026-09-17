@@ -52,6 +52,24 @@ export interface AuthenticatedIdentity {
   username: string;
   role: Role;
 }
+
+export type AuthStateStatus = "FIRST_RUN_ADMIN_SETUP" | "AUTHENTICATED" | "UNAUTHENTICATED";
+
+export interface AuthStateDto {
+  status: AuthStateStatus;
+  user: AuthenticatedIdentity | null;
+}
+
+export interface CreateInitialAdminInput {
+  username: string;
+  password: string;
+  confirmPassword: string;
+}
+
+export interface LoginInput {
+  username: string;
+  password: string;
+}
 export type ProductType = "PACKAGED" | "LOOSE";
 export type StockStatus = "LOW_STOCK" | "NORMAL";
 export type BarcodeType = "MANUFACTURER" | "WEIGHING_SCALE" | "INTERNAL";

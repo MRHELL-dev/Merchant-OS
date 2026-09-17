@@ -3,6 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   SystemStatus,
   SYSTEM_DEFAULTS,
+  AuthStateDto,
+  AuthenticatedIdentity,
+  CreateInitialAdminInput,
+  LoginInput,
   SupplierSummary,
   ProductForPurchase,
   PurchaseFormData,
@@ -117,6 +121,23 @@ export default function App() {
     timestamp: new Date().toISOString(),
   });
   const [isTauri, setIsTauri] = useState(true);
+
+  // --- BUILD 15: Authentication & Onboarding State ---
+  const [authState, setAuthState] = useState<"INITIALIZING" | "FIRST_RUN_ADMIN_SETUP" | "AUTHENTICATED" | "UNAUTHENTICATED">("INITIALIZING");
+  const [currentUser, setCurrentUser] = useState<AuthenticatedIdentity | null>(null);
+
+  // First-Run Admin Setup State
+  const [adminUsername, setAdminUsername] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminConfirmPassword, setAdminConfirmPassword] = useState("");
+  const [creatingAdmin, setCreatingAdmin] = useState(false);
+  const [adminSetupError, setAdminSetupError] = useState<string | null>(null);
+
+  // Login State
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   // --- Notifications / Feedback ---
   const [feedback, setFeedback] = useState<{ message: string; type: "error" | "success" | "info" } | null>(null);
@@ -448,9 +469,118 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    void loadInitialData();
+  // --- BUILD 15: Auth Initialization & Lifecycle ---
+  const checkAuthAndInit = useCallback(async () => {
+    try {
+      const state = await invoke<AuthStateDto>("get_auth_state");
+      if (state.status === "FIRST_RUN_ADMIN_SETUP") {
+        setAuthState("FIRST_RUN_ADMIN_SETUP");
+        setCurrentUser(null);
+      } else if (state.status === "AUTHENTICATED") {
+        setAuthState("AUTHENTICATED");
+        setCurrentUser(state.user);
+        await loadInitialData();
+      } else {
+        setAuthState("UNAUTHENTICATED");
+        setCurrentUser(null);
+      }
+    } catch (err: any) {
+      console.warn("Failed to check auth state, defaulting to preview:", err);
+      setAuthState("AUTHENTICATED");
+      await loadInitialData();
+    }
   }, [loadInitialData]);
+
+  useEffect(() => {
+    void checkAuthAndInit();
+  }, [checkAuthAndInit]);
+
+  const handleCreateInitialAdmin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAdminSetupError(null);
+
+    const trimmedUser = adminUsername.trim();
+    if (!trimmedUser) {
+      setAdminSetupError("Admin Username cannot be empty");
+      return;
+    }
+    if (!adminPassword) {
+      setAdminSetupError("Admin Password cannot be empty");
+      return;
+    }
+    if (adminPassword !== adminConfirmPassword) {
+      setAdminSetupError("Confirm Password does not match Admin Password");
+      return;
+    }
+
+    try {
+      setCreatingAdmin(true);
+      const payload: CreateInitialAdminInput = {
+        username: trimmedUser,
+        password: adminPassword,
+        confirmPassword: adminConfirmPassword,
+      };
+      const user = await invoke<AuthenticatedIdentity>("create_initial_admin", {
+        input: payload,
+      });
+      setCurrentUser(user);
+      setAuthState("AUTHENTICATED");
+      showNotification(`Administrator "${user.username}" established successfully!`, "success");
+      await loadInitialData();
+    } catch (err: any) {
+      const msg = typeof err === "string" ? err : err.message || "Failed to create Admin account";
+      setAdminSetupError(msg);
+    } finally {
+      setCreatingAdmin(false);
+    }
+  };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+
+    const trimmedUser = loginUsername.trim();
+    if (!trimmedUser) {
+      setLoginError("Username cannot be empty");
+      return;
+    }
+    if (!loginPassword) {
+      setLoginError("Password cannot be empty");
+      return;
+    }
+
+    try {
+      setLoggingIn(true);
+      const payload: LoginInput = {
+        username: trimmedUser,
+        password: loginPassword,
+      };
+      const user = await invoke<AuthenticatedIdentity>("login", {
+        input: payload,
+      });
+      setCurrentUser(user);
+      setAuthState("AUTHENTICATED");
+      showNotification(`Welcome back, ${user.username}!`, "success");
+      await loadInitialData();
+    } catch (err: any) {
+      const msg = typeof err === "string" ? err : err.message || "Invalid username or password";
+      setLoginError(msg);
+    } finally {
+      setLoggingIn(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await invoke("logout");
+    } catch (e) {
+      console.warn("Logout error:", e);
+    }
+    setCurrentUser(null);
+    setAuthState("UNAUTHENTICATED");
+    setLoginPassword("");
+    showNotification("Logged out successfully", "info");
+  };
 
   // ==============================================================================================
   // BUILD 07: POS WORKFLOW HANDLERS
@@ -2005,6 +2135,149 @@ export default function App() {
   // RENDER UI
   // ==============================================================================================
 
+  if (authState === "INITIALIZING") {
+    return (
+      <div className="viewport-container onboarding-center">
+        <div className="ambient-grid" />
+        <div className="onboarding-card" style={{ textAlign: "center", padding: "40px" }}>
+          <div className="brand-logo-badge" style={{ margin: "0 auto 16px" }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ width: 28, height: 28 }}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <div className="onboarding-title">Merchant OS</div>
+          <div className="onboarding-subtitle">Initializing sovereign database...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authState === "FIRST_RUN_ADMIN_SETUP") {
+    return (
+      <div className="viewport-container onboarding-center">
+        <div className="ambient-grid" />
+        <div className="onboarding-card">
+          <div className="onboarding-header">
+            <div className="onboarding-badge">WELCOME</div>
+            <h1 className="onboarding-title">Set up Merchant OS</h1>
+            <p className="onboarding-subtitle">Create the primary administrator account to secure your local store data.</p>
+          </div>
+
+          {adminSetupError && (
+            <div className="onboarding-error-alert">
+              <span>⚠️</span>
+              <span>{adminSetupError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleCreateInitialAdmin}>
+            <div className="onboarding-field">
+              <label htmlFor="admin-username">Admin Username</label>
+              <input
+                id="admin-username"
+                type="text"
+                value={adminUsername}
+                onChange={(e) => setAdminUsername(e.target.value)}
+                placeholder="e.g. admin"
+                autoFocus
+                disabled={creatingAdmin}
+              />
+            </div>
+
+            <div className="onboarding-field">
+              <label htmlFor="admin-password">Admin Password</label>
+              <input
+                id="admin-password"
+                type="password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                placeholder="Enter secure password"
+                disabled={creatingAdmin}
+              />
+            </div>
+
+            <div className="onboarding-field">
+              <label htmlFor="admin-confirm-password">Confirm Password</label>
+              <input
+                id="admin-confirm-password"
+                type="password"
+                value={adminConfirmPassword}
+                onChange={(e) => setAdminConfirmPassword(e.target.value)}
+                placeholder="Confirm password"
+                disabled={creatingAdmin}
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="onboarding-submit-btn"
+              disabled={creatingAdmin}
+            >
+              {creatingAdmin ? "Creating Admin..." : "Create Admin"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (authState === "UNAUTHENTICATED") {
+    return (
+      <div className="viewport-container onboarding-center">
+        <div className="ambient-grid" />
+        <div className="onboarding-card">
+          <div className="onboarding-header">
+            <div className="onboarding-badge">LOGIN</div>
+            <h1 className="onboarding-title">Welcome Back</h1>
+            <p className="onboarding-subtitle">Sign in to your Merchant OS administrator account.</p>
+          </div>
+
+          {loginError && (
+            <div className="onboarding-error-alert">
+              <span>⚠️</span>
+              <span>{loginError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleLogin}>
+            <div className="onboarding-field">
+              <label htmlFor="login-username">Username</label>
+              <input
+                id="login-username"
+                type="text"
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                placeholder="Username"
+                autoFocus
+                disabled={loggingIn}
+              />
+            </div>
+
+            <div className="onboarding-field">
+              <label htmlFor="login-password">Password</label>
+              <input
+                id="login-password"
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                placeholder="Password"
+                disabled={loggingIn}
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="onboarding-submit-btn"
+              disabled={loggingIn}
+            >
+              {loggingIn ? "Signing In..." : "Sign In"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="viewport-container">
       <div className="ambient-grid" />
@@ -2128,6 +2401,19 @@ export default function App() {
           <div className="status-pill status-pill-offline">
             <span>OFFLINE-FIRST</span>
           </div>
+          {currentUser && (
+            <div className="status-pill-user" title={`Logged in as ${currentUser.username} (${currentUser.role})`}>
+              <span>👤 {currentUser.username}</span>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="logout-header-btn"
+                title="Sign out of Merchant OS"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
