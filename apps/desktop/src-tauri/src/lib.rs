@@ -128,6 +128,9 @@ pub fn run() {
             commands::create_initial_admin,
             commands::login,
             commands::logout,
+            // BUILD 16 Business Profile Onboarding Commands
+            commands::get_business_profile,
+            commands::save_business_profile,
             commands::get_system_status,
             commands::get_purchase_form_data,
             commands::create_supplier_for_purchase,

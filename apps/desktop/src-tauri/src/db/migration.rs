@@ -60,16 +60,9 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     // 2. Apply V1 migration if needed
     apply_migration_if_needed(conn, MIGRATION_VERSION_V1, MIGRATION_SQL_V1)?;
 
-    // 3. Ensure default business exists so foreign key references to biz_default succeed
     let now = format!("{:?}", std::time::SystemTime::now());
-    conn.execute(
-        "INSERT INTO businesses (id, name, phone, address, created_at, updated_at)
-         VALUES ('biz_default', 'Default Business', '0000000000', 'Local Store', ?1, ?1)
-         ON CONFLICT(id) DO NOTHING",
-        params![now],
-    )?;
 
-    // 4. Apply V2 migration if needed
+    // 3. Apply V2 migration if needed
     apply_migration_if_needed(conn, MIGRATION_VERSION_V2, MIGRATION_SQL_V2)?;
 
     // 5. Ensure foundation metadata is seeded if not present

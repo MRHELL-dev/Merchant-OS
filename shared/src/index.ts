@@ -55,9 +55,23 @@ export interface AuthenticatedIdentity {
 
 export type AuthStateStatus = "FIRST_RUN_ADMIN_SETUP" | "AUTHENTICATED" | "UNAUTHENTICATED";
 
+export interface BusinessProfileDto {
+  id: string;
+  name: string;
+  phone: string;
+  address: string;
+}
+
+export interface SaveBusinessProfileInput {
+  name: string;
+  phone: string;
+  address: string;
+}
+
 export interface AuthStateDto {
   status: AuthStateStatus;
   user: AuthenticatedIdentity | null;
+  business?: BusinessProfileDto | null;
 }
 
 export interface CreateInitialAdminInput {

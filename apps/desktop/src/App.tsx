@@ -7,6 +7,8 @@ import {
   AuthenticatedIdentity,
   CreateInitialAdminInput,
   LoginInput,
+  BusinessProfileDto,
+  SaveBusinessProfileInput,
   SupplierSummary,
   ProductForPurchase,
   PurchaseFormData,
@@ -138,6 +140,18 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+
+  // --- BUILD 16: Business Profile State ---
+  const [businessProfile, setBusinessProfile] = useState<BusinessProfileDto | null>(null);
+  const [showBusinessOnboarding, setShowBusinessOnboarding] = useState(false);
+  const [showEditProfileModal, setShowEditProfileModal] = useState(false);
+
+  // Business Profile Form Inputs
+  const [bizName, setBizName] = useState("");
+  const [bizPhone, setBizPhone] = useState("");
+  const [bizAddress, setBizAddress] = useState("");
+  const [savingBizProfile, setSavingBizProfile] = useState(false);
+  const [bizProfileError, setBizProfileError] = useState<string | null>(null);
 
   // --- Notifications / Feedback ---
   const [feedback, setFeedback] = useState<{ message: string; type: "error" | "success" | "info" } | null>(null);
@@ -469,20 +483,31 @@ export default function App() {
     }
   }, []);
 
-  // --- BUILD 15: Auth Initialization & Lifecycle ---
+  // --- BUILD 15 & 16: Auth & Business Profile Initialization & Lifecycle ---
   const checkAuthAndInit = useCallback(async () => {
     try {
       const state = await invoke<AuthStateDto>("get_auth_state");
       if (state.status === "FIRST_RUN_ADMIN_SETUP") {
         setAuthState("FIRST_RUN_ADMIN_SETUP");
         setCurrentUser(null);
+        setBusinessProfile(null);
+        setShowBusinessOnboarding(false);
       } else if (state.status === "AUTHENTICATED") {
         setAuthState("AUTHENTICATED");
         setCurrentUser(state.user);
-        await loadInitialData();
+        if (state.business) {
+          setBusinessProfile(state.business);
+          setShowBusinessOnboarding(false);
+          await loadInitialData();
+        } else {
+          setBusinessProfile(null);
+          setShowBusinessOnboarding(true);
+        }
       } else {
         setAuthState("UNAUTHENTICATED");
         setCurrentUser(null);
+        setBusinessProfile(state.business ?? null);
+        setShowBusinessOnboarding(false);
       }
     } catch (err: any) {
       console.warn("Failed to check auth state, defaulting to preview:", err);
@@ -525,8 +550,9 @@ export default function App() {
       });
       setCurrentUser(user);
       setAuthState("AUTHENTICATED");
-      showNotification(`Administrator "${user.username}" established successfully!`, "success");
-      await loadInitialData();
+      // Required flow: No Admin -> Admin Setup -> authenticated session -> Business Profile onboarding
+      setShowBusinessOnboarding(true);
+      showNotification(`Administrator "${user.username}" established! Please configure your business profile.`, "success");
     } catch (err: any) {
       const msg = typeof err === "string" ? err : err.message || "Failed to create Admin account";
       setAdminSetupError(msg);
@@ -560,8 +586,19 @@ export default function App() {
       });
       setCurrentUser(user);
       setAuthState("AUTHENTICATED");
-      showNotification(`Welcome back, ${user.username}!`, "success");
-      await loadInitialData();
+
+      // Check if valid business profile exists
+      const profile = await invoke<BusinessProfileDto | null>("get_business_profile");
+      if (profile) {
+        setBusinessProfile(profile);
+        setShowBusinessOnboarding(false);
+        showNotification(`Welcome back, ${user.username}!`, "success");
+        await loadInitialData();
+      } else {
+        // Admin exists + no valid business profile -> Business Profile onboarding
+        setBusinessProfile(null);
+        setShowBusinessOnboarding(true);
+      }
     } catch (err: any) {
       const msg = typeof err === "string" ? err : err.message || "Invalid username or password";
       setLoginError(msg);
@@ -579,7 +616,52 @@ export default function App() {
     setCurrentUser(null);
     setAuthState("UNAUTHENTICATED");
     setLoginPassword("");
+    setShowBusinessOnboarding(false);
+    setShowEditProfileModal(false);
     showNotification("Logged out successfully", "info");
+  };
+
+  const handleSaveBusinessProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBizProfileError(null);
+
+    const trimmedName = bizName.trim();
+    if (!trimmedName) {
+      setBizProfileError("Shop / Business Name cannot be empty");
+      return;
+    }
+    const trimmedPhone = bizPhone.trim();
+    if (!trimmedPhone) {
+      setBizProfileError("Phone Number cannot be empty");
+      return;
+    }
+    const trimmedAddress = bizAddress.trim();
+    if (!trimmedAddress) {
+      setBizProfileError("Address cannot be empty");
+      return;
+    }
+
+    try {
+      setSavingBizProfile(true);
+      const payload: SaveBusinessProfileInput = {
+        name: trimmedName,
+        phone: trimmedPhone,
+        address: trimmedAddress,
+      };
+      const profile = await invoke<BusinessProfileDto>("save_business_profile", {
+        input: payload,
+      });
+      setBusinessProfile(profile);
+      setShowBusinessOnboarding(false);
+      setShowEditProfileModal(false);
+      showNotification(`Business profile "${profile.name}" saved successfully!`, "success");
+      await loadInitialData();
+    } catch (err: any) {
+      const msg = typeof err === "string" ? err : err.message || "Failed to save business profile";
+      setBizProfileError(msg);
+    } finally {
+      setSavingBizProfile(false);
+    }
   };
 
   // ==============================================================================================
@@ -2278,6 +2360,76 @@ export default function App() {
     );
   }
 
+  if (authState === "AUTHENTICATED" && showBusinessOnboarding) {
+    return (
+      <div className="viewport-container onboarding-center">
+        <div className="ambient-grid" />
+        <div className="onboarding-card">
+          <div className="onboarding-header">
+            <div className="onboarding-badge">STORE SETUP</div>
+            <h1 className="onboarding-title">Business Profile</h1>
+            <p className="onboarding-subtitle">Configure your store details for invoices, inventory, and local operations.</p>
+          </div>
+
+          {bizProfileError && (
+            <div className="onboarding-error-alert">
+              <span>⚠️</span>
+              <span>{bizProfileError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSaveBusinessProfile}>
+            <div className="onboarding-field">
+              <label htmlFor="biz-name">Shop / Business Name</label>
+              <input
+                id="biz-name"
+                type="text"
+                value={bizName}
+                onChange={(e) => setBizName(e.target.value)}
+                placeholder="e.g. Bharat Kirana & General Store"
+                autoFocus
+                disabled={savingBizProfile}
+              />
+            </div>
+
+            <div className="onboarding-field">
+              <label htmlFor="biz-phone">Phone Number</label>
+              <input
+                id="biz-phone"
+                type="text"
+                value={bizPhone}
+                onChange={(e) => setBizPhone(e.target.value)}
+                placeholder="e.g. +91 98765 43210"
+                disabled={savingBizProfile}
+              />
+            </div>
+
+            <div className="onboarding-field">
+              <label htmlFor="biz-address">Address</label>
+              <input
+                id="biz-address"
+                type="text"
+                value={bizAddress}
+                onChange={(e) => setBizAddress(e.target.value)}
+                placeholder="e.g. Shop 4, Market Complex, Delhi"
+                disabled={savingBizProfile}
+              />
+            </div>
+
+            <button
+              id="save-biz-profile-btn"
+              type="submit"
+              className="onboarding-submit-btn"
+              disabled={savingBizProfile}
+            >
+              {savingBizProfile ? "Saving Profile..." : "Save Business Profile"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="viewport-container">
       <div className="ambient-grid" />
@@ -2393,6 +2545,27 @@ export default function App() {
 
         {/* System Telemetry Badges */}
         <div className="header-status-group">
+          {businessProfile && (
+            <div className="status-pill-biz" title={`Shop: ${businessProfile.name}\nPhone: ${businessProfile.phone}\nAddress: ${businessProfile.address}`}>
+              <span>🏪 {businessProfile.name}</span>
+              {currentUser?.role === "ADMIN" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBizName(businessProfile.name);
+                    setBizPhone(businessProfile.phone);
+                    setBizAddress(businessProfile.address);
+                    setBizProfileError(null);
+                    setShowEditProfileModal(true);
+                  }}
+                  className="edit-profile-header-btn"
+                  title="Edit Business Profile"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
+          )}
           <div className="build-badge">Merchant OS v0.1.0</div>
           <div className="status-pill status-pill-sqlite">
             <span className="pulse-dot" />
@@ -7055,6 +7228,93 @@ export default function App() {
                 {restoringBackup ? "Restoring Database Pages..." : "Execute Authoritative Restore"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================================================== */}
+      {/* BUILD 16: EDIT BUSINESS PROFILE MODAL (ADMIN ONLY)                                      */}
+      {/* ======================================================================================== */}
+      {showEditProfileModal && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: 460 }}>
+            <div className="modal-header">
+              <div>
+                <h3 className="modal-title">Edit Business Profile</h3>
+                <p className="modal-desc">Update authoritative store details in SQLite.</p>
+              </div>
+              <button
+                type="button"
+                className="modal-close-btn"
+                onClick={() => setShowEditProfileModal(false)}
+                disabled={savingBizProfile}
+              >
+                ✕
+              </button>
+            </div>
+
+            {bizProfileError && (
+              <div className="onboarding-error-alert" style={{ margin: "1rem" }}>
+                <span>⚠️</span>
+                <span>{bizProfileError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveBusinessProfile} style={{ padding: "1.25rem" }}>
+              <div className="onboarding-field">
+                <label htmlFor="modal-biz-name">Shop / Business Name</label>
+                <input
+                  id="modal-biz-name"
+                  type="text"
+                  value={bizName}
+                  onChange={(e) => setBizName(e.target.value)}
+                  placeholder="Shop / Business Name"
+                  disabled={savingBizProfile}
+                />
+              </div>
+
+              <div className="onboarding-field">
+                <label htmlFor="modal-biz-phone">Phone Number</label>
+                <input
+                  id="modal-biz-phone"
+                  type="text"
+                  value={bizPhone}
+                  onChange={(e) => setBizPhone(e.target.value)}
+                  placeholder="Phone Number"
+                  disabled={savingBizProfile}
+                />
+              </div>
+
+              <div className="onboarding-field">
+                <label htmlFor="modal-biz-address">Address</label>
+                <input
+                  id="modal-biz-address"
+                  type="text"
+                  value={bizAddress}
+                  onChange={(e) => setBizAddress(e.target.value)}
+                  placeholder="Address"
+                  disabled={savingBizProfile}
+                />
+              </div>
+
+              <div className="modal-footer" style={{ marginTop: "1.5rem", padding: 0 }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowEditProfileModal(false)}
+                  disabled={savingBizProfile}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={savingBizProfile}
+                >
+                  {savingBizProfile ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

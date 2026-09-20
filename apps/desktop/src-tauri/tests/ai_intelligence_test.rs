@@ -48,6 +48,14 @@ fn setup_test_db(test_name: &str) -> (DatabaseManager, PathBuf) {
             rusqlite::params![emp_hash, now],
         )?;
 
+        // Business
+        conn.execute(
+            "INSERT INTO businesses (id, name, phone, address, created_at, updated_at)
+             VALUES ('biz_default', 'Test Store', '+919876543210', 'Market St', ?1, ?1)
+             ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![now],
+        )?;
+
         // Category
         conn.execute(
             "INSERT INTO categories (id, name, slug, created_at)

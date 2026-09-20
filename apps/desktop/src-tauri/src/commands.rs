@@ -5632,9 +5632,61 @@ pub struct AuthenticatedUserDto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BusinessProfileDto {
+    pub id: String,
+    pub name: String,
+    pub phone: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveBusinessProfileInput {
+    pub name: String,
+    pub phone: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AuthStateDto {
     pub status: String,
     pub user: Option<AuthenticatedUserDto>,
+    pub business: Option<BusinessProfileDto>,
+}
+
+fn fetch_active_business_profile(conn: &rusqlite::Connection) -> rusqlite::Result<Option<BusinessProfileDto>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, phone, address FROM businesses ORDER BY created_at ASC LIMIT 1"
+    )?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        let phone: String = row.get(2)?;
+        let address: String = row.get(3)?;
+
+        // If legacy placeholder with unconfigured values and not explicitly marked onboarded
+        if name == "Default Business" && phone == "0000000000" {
+            let onboarded: Result<String, _> = conn.query_row(
+                "SELECT value FROM system_metadata WHERE key = 'business_profile_onboarded'",
+                [],
+                |r| r.get(0),
+            );
+            if onboarded.as_deref() != Ok("true") {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(BusinessProfileDto {
+            id,
+            name,
+            phone,
+            address,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn get_auth_state_inner(
@@ -5648,10 +5700,13 @@ pub fn get_auth_state_inner(
             |r| r.get(0),
         )?;
 
+        let business = fetch_active_business_profile(conn)?;
+
         if admin_count == 0 {
             Ok(AuthStateDto {
                 status: "FIRST_RUN_ADMIN_SETUP".to_string(),
                 user: None,
+                business: None,
             })
         } else if let Ok(identity) = session.get_identity() {
             Ok(AuthStateDto {
@@ -5661,13 +5716,98 @@ pub fn get_auth_state_inner(
                     username: identity.username().to_string(),
                     role: identity.role().as_str().to_string(),
                 }),
+                business,
             })
         } else {
             Ok(AuthStateDto {
                 status: "UNAUTHENTICATED".to_string(),
                 user: None,
+                business,
             })
         }
+    })
+    .map_err(|e| e.to_string())
+}
+
+pub fn get_business_profile_inner(
+    db: &DatabaseManager,
+    session: &AuthSession,
+) -> Result<Option<BusinessProfileDto>, String> {
+    let _identity = session.get_identity()?;
+    db.with_connection(|conn| {
+        Ok(fetch_active_business_profile(conn)?)
+    })
+    .map_err(|e| e.to_string())
+}
+
+pub fn save_business_profile_inner(
+    db: &DatabaseManager,
+    session: &AuthSession,
+    input: SaveBusinessProfileInput,
+) -> Result<BusinessProfileDto, String> {
+    let identity = session.get_identity()?;
+    if !identity.is_admin() {
+        return Err("Unauthorized: Only an Administrator can update the business profile".to_string());
+    }
+
+    let trimmed_name = input.name.trim();
+    if trimmed_name.is_empty() {
+        return Err("Shop / Business Name cannot be empty".to_string());
+    }
+
+    let trimmed_phone = input.phone.trim();
+    if trimmed_phone.is_empty() {
+        return Err("Phone Number cannot be empty".to_string());
+    }
+
+    let trimmed_address = input.address.trim();
+    if trimmed_address.is_empty() {
+        return Err("Address cannot be empty".to_string());
+    }
+
+    let now = format!("{:?}", std::time::SystemTime::now());
+
+    db.with_connection(|conn| {
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM businesses ORDER BY created_at ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let business_id = match existing_id {
+            Some(id) => {
+                conn.execute(
+                    "UPDATE businesses SET name = ?1, phone = ?2, address = ?3, updated_at = ?4 WHERE id = ?5",
+                    params![trimmed_name, trimmed_phone, trimmed_address, now, id],
+                )?;
+                id
+            }
+            None => {
+                let canonical_id = "biz_default".to_string();
+                conn.execute(
+                    "INSERT INTO businesses (id, name, phone, address, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    params![canonical_id, trimmed_name, trimmed_phone, trimmed_address, now],
+                )?;
+                canonical_id
+            }
+        };
+
+        conn.execute(
+            "INSERT INTO system_metadata (key, value, updated_at)
+             VALUES ('business_profile_onboarded', 'true', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = ?1",
+            params![now],
+        )?;
+
+        Ok(BusinessProfileDto {
+            id: business_id,
+            name: trimmed_name.to_string(),
+            phone: trimmed_phone.to_string(),
+            address: trimmed_address.to_string(),
+        })
     })
     .map_err(|e| e.to_string())
 }
@@ -5818,6 +5958,23 @@ pub fn login(
 #[tauri::command]
 pub fn logout(session: tauri::State<AuthSession>) -> Result<(), String> {
     logout_inner(&session)
+}
+
+#[tauri::command]
+pub fn get_business_profile(
+    db: tauri::State<DatabaseManager>,
+    session: tauri::State<AuthSession>,
+) -> Result<Option<BusinessProfileDto>, String> {
+    get_business_profile_inner(&db, &session)
+}
+
+#[tauri::command]
+pub fn save_business_profile(
+    db: tauri::State<DatabaseManager>,
+    session: tauri::State<AuthSession>,
+    input: SaveBusinessProfileInput,
+) -> Result<BusinessProfileDto, String> {
+    save_business_profile_inner(&db, &session, input)
 }
 
 
